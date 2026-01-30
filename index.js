@@ -1,254 +1,76 @@
 const express = require("express");
-const bodyParser = require("body-parser");
-const cors = require("cors");
-const admin = require("firebase-admin");
-
-// ===================================================
-// 🔐 Firebase Admin init using ENV variable
-// ===================================================
-if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-  throw new Error("❌ FIREBASE_SERVICE_ACCOUNT env variable not set");
-}
-
-admin.initializeApp({
-  credential: admin.credential.cert(
-    JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-  ),
-});
+const http = require("http");
+const { Server } = require("socket.io");
 
 const app = express();
-app.use(cors());
-app.use(bodyParser.json());
-
-// ===================================================
-// In-memory storage (FOR TESTING ONLY)
-// ===================================================
-// userId -> fcmToken
-const users = new Map();
-
-// callId -> call info
-const activeCalls = new Map();
-
-// ===================================================
-// Health check
-// ===================================================
-app.get("/", (_, res) => {
-  res.send("🚀 FCM + Zego backend running");
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: { origin: "*" },
 });
 
-// ===================================================
-// Register user FCM token
-// ===================================================
-app.post("/register", (req, res) => {
-  const { userId, fcmToken } = req.body;
+const users = {}; // userId -> socketId
 
-  if (!userId || !fcmToken) {
-    return res.status(400).json({
-      error: "Missing userId or fcmToken",
-    });
+io.on("connection", (socket) => {
+  const userId = socket.handshake.query.userId;
+
+  if (!userId) {
+    socket.disconnect();
+    return;
   }
 
-  users.set(userId, fcmToken);
-  console.log(`✅ Registered user: ${userId}`);
+  users[userId] = socket.id;
+  console.log("User connected:", userId);
 
-  res.json({ success: true });
-});
-
-// ===================================================
-// Start call (FCM → Zego signaling)
-// ===================================================
-app.post("/call", async (req, res) => {
-  const { fromUserId, toUserId, callType } = req.body;
-
-  if (!fromUserId || !toUserId) {
-    return res.status(400).json({
-      error: "Missing fromUserId or toUserId",
-    });
-  }
-
-  const token = users.get(toUserId);
-  if (!token) {
-    return res.status(404).json({
-      error: "User not registered / offline",
-    });
-  }
-
-  const callId = `call_${Date.now()}`;
-
-  activeCalls.set(callId, {
-    fromUserId,
-    toUserId,
-    status: "ringing",
-    createdAt: Date.now(),
+  // ---------- CALL OFFER ----------
+  socket.on("call-offer", ({ targetId, offer }) => {
+    const targetSocket = users[targetId];
+    if (targetSocket) {
+      io.to(targetSocket).emit("call-offer", {
+        from: userId,
+        offer,
+      });
+    }
   });
 
-  const message = {
-    token,
-    data: {
-      type: "zego_call",
-      call_id: callId,
-      caller_id: fromUserId,
-      caller_name: fromUserId,
-      call_type: callType || "video", // video | audio
-      timeout: "60", // seconds
-    },
-    android: {
-      priority: "high",
-    },
-  };
+  // ---------- CALL ANSWER ----------
+  socket.on("call-answer", ({ targetId, answer }) => {
+    const targetSocket = users[targetId];
+    if (targetSocket) {
+      io.to(targetSocket).emit("call-answer", {
+        from: userId,
+        answer,
+      });
+    }
+  });
 
-  try {
-    const response = await admin.messaging().send(message);
-    console.log("📞 Call FCM sent:", response);
+  // ---------- ICE CANDIDATE ----------
+  socket.on("ice-candidate", ({ targetId, candidate }) => {
+    const targetSocket = users[targetId];
+    if (targetSocket) {
+      io.to(targetSocket).emit("ice-candidate", {
+        from: userId,
+        candidate,
+      });
+    }
+  });
 
-    res.json({
-      success: true,
-      callId,
-    });
-  } catch (err) {
-    console.error("❌ FCM send error:", err);
-    res.status(500).json({
-      error: "Failed to send call notification",
-    });
-  }
+  // ---------- END CALL ----------
+  socket.on("end-call", ({ targetId }) => {
+    const targetSocket = users[targetId];
+    if (targetSocket) {
+      io.to(targetSocket).emit("end-call", {
+        from: userId,
+      });
+    }
+  });
+
+  // ---------- DISCONNECT ----------
+  socket.on("disconnect", () => {
+    delete users[userId];
+    console.log("User disconnected:", userId);
+  });
 });
 
-// ===================================================
-// Call response (accept / decline / timeout)
-// ===================================================
-app.post("/call-response", (req, res) => {
-  const { callId, action, userId } = req.body;
-
-  if (!callId || !action || !userId) {
-    return res.status(400).json({
-      error: "Missing callId, action or userId",
-    });
-  }
-
-  const call = activeCalls.get(callId);
-  if (!call) {
-    return res.status(404).json({
-      error: "Call not found",
-    });
-  }
-
-  call.status = action; // accepted | declined | timeout
-  activeCalls.set(callId, call);
-
-  console.log(
-    `📡 Call ${callId} ${action.toUpperCase()} by ${userId}`
-  );
-
-  // Cleanup if not accepted
-  if (action !== "accepted") {
-    activeCalls.delete(callId);
-  }
-
-  res.json({ success: true });
+server.listen(3000, () => {
+  console.log("🚀 Signaling server running on port 3000");
 });
-
-// ===================================================
-// Start server (Render compatible)
-// ===================================================
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-});
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// const express = require("express");
-// const bodyParser = require("body-parser");
-// const cors = require("cors");
-// const admin = require("firebase-admin");
-
-// // 🔐 Initialize Firebase Admin using ENV variable
-// admin.initializeApp({
-//   credential: admin.credential.cert(
-//     JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-//   ),
-// });
-
-// const app = express();
-// app.use(cors());
-// app.use(bodyParser.json());
-
-// // In-memory storage (testing only)
-// const users = {}; // userId -> fcmToken
-
-// // Health check
-// app.get("/", (req, res) => {
-//   res.send("FCM Backend Running 🚀");
-// });
-
-// // Register user token
-// app.post("/register", (req, res) => {
-//   const { userId, fcmToken } = req.body;
-
-//   if (!userId || !fcmToken) {
-//     return res.status(400).json({ error: "Missing userId or fcmToken" });
-//   }
-
-//   users[userId] = fcmToken;
-//   res.json({ success: true });
-// });
-
-// // Trigger call
-// app.post("/call", async (req, res) => {
-//   const { fromUserId, toUserId } = req.body;
-//   const token = users[toUserId];
-
-//   if (!token) {
-//     return res.status(404).json({ error: "User not found" });
-//   }
-
-//   try {
-//     const message = {
-//       token,
-//       notification: {
-//         title: "Incoming Call",
-//         body: `Call from ${fromUserId}`,
-//       },
-//       data: {
-//         type: "CALL",
-//         fromUserId,
-//       },
-//       android: {
-//         priority: "high",
-//       },
-//     };
-
-//     await admin.messaging().send(message);
-//     res.json({ success: true });
-//   } catch (err) {
-//     console.error("FCM error:", err);
-//     res.status(500).json({ error: "Failed to send notification" });
-//   }
-// });
-
-// // Call response
-// app.post("/call-response", (req, res) => {
-//   const { fromUserId, action } = req.body;
-//   console.log(`Call ${action} by ${fromUserId}`);
-//   res.json({ success: true });
-// });
-
-// // 🚀 Render requires process.env.PORT
-// const PORT = process.env.PORT || 3000;
-// app.listen(PORT, () => {
-//   console.log("Server running on port", PORT);
-// });
