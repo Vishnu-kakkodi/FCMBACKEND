@@ -91,6 +91,12 @@
 
 
 
+/**
+ * IMPORTANT for Render DNS
+ * This MUST be at the very top of the file
+ */
+process.env.NODE_OPTIONS = "--dns-result-order=ipv4first";
+
 require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
@@ -101,6 +107,14 @@ app.use(express.json());
 
 const ZEGO_APP_ID = Number(process.env.ZEGO_APP_ID);
 const ZEGO_SERVER_SECRET = process.env.ZEGO_SERVER_SECRET;
+
+/**
+ * Axios instance forcing IPv4 (extra safety)
+ */
+const axiosInstance = axios.create({
+  timeout: 5000,
+  family: 4, // ✅ force IPv4
+});
 
 /**
  * Generate ZEGOCLOUD Server API auth
@@ -127,7 +141,6 @@ app.post("/zego/online-users", async (req, res) => {
   try {
     const { roomId } = req.body;
 
-    // ✅ Validate input
     if (!roomId) {
       return res.status(400).json({
         error: "roomId is required",
@@ -136,7 +149,7 @@ app.post("/zego/online-users", async (req, res) => {
 
     const { signature, timestamp, nonce } = generateZegoAuth();
 
-    const response = await axios.post(
+    const response = await axiosInstance.post(
       "https://rtc-api.zegocloud.com/v1/room/online_users",
       {
         app_id: ZEGO_APP_ID,
@@ -150,7 +163,6 @@ app.post("/zego/online-users", async (req, res) => {
           "X-Zego-Nonce": nonce,
           Authorization: signature,
         },
-        timeout: 5000,
       }
     );
 
@@ -175,10 +187,10 @@ app.post("/zego/online-users", async (req, res) => {
  * Health check
  */
 app.get("/", (_, res) => {
-  res.send("ZEGOCLOUD API running 🚀");
+  res.send("ZEGOCLOUD backend running 🚀");
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () =>
-  console.log(`✅ Server running on port ${PORT}`)
-);
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+});
